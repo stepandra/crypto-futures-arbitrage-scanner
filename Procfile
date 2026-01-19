@@ -1,0 +1,1 @@
+web: futures-arbitrage-scanner

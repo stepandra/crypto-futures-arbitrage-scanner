@@ -5,6 +5,7 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,6 +23,15 @@ type ArbitrageOpportunity struct {
 	SellPrice  float64 `json:"sell_price"`
 	ProfitPct  float64 `json:"profit_pct"`
 	Timestamp  int64   `json:"timestamp"`
+}
+
+type BasisTradeOpportunity struct {
+	Symbol      string  `json:"symbol"`
+	DeDustPrice float64 `json:"dedust_price"`
+	ShortSource string  `json:"short_source"`
+	ShortPrice  float64 `json:"short_price"`
+	ProfitPct   float64 `json:"profit_pct"`
+	Timestamp   int64   `json:"timestamp"`
 }
 
 type FuturesScanner struct {
@@ -64,14 +74,14 @@ func (s *FuturesScanner) processOrderbooks() {
 	for orderbookData := range s.orderbookChan {
 		// Calculate mid price from best bid and best ask
 		midPrice := (orderbookData.BestBid + orderbookData.BestAsk) / 2
-		
+
 		priceData := exchanges.PriceData{
 			Symbol:    orderbookData.Symbol,
 			Source:    orderbookData.Source,
 			Price:     midPrice,
 			Timestamp: orderbookData.Timestamp,
 		}
-		
+
 		s.updatePrice(priceData)
 	}
 }
@@ -82,7 +92,6 @@ func (s *FuturesScanner) processTrades() {
 	}
 }
 
-
 func (s *FuturesScanner) updatePrice(data exchanges.PriceData) {
 	s.pricesMutex.Lock()
 	if s.prices[data.Symbol] == nil {
@@ -92,6 +101,112 @@ func (s *FuturesScanner) updatePrice(data exchanges.PriceData) {
 	s.pricesMutex.Unlock()
 
 	s.checkArbitrage(data.Symbol)
+	s.checkArbitrage(data.Symbol)
+	s.checkBasisTrade(data.Symbol)
+}
+
+func (s *FuturesScanner) checkBasisTrade(symbol string) {
+	s.pricesMutex.RLock()
+	sourcePrices, exists := s.prices[symbol]
+	if !exists {
+		s.pricesMutex.RUnlock()
+		return
+	}
+
+	dedustPrice, hasDeDust := sourcePrices["DeDust"]
+	if !hasDeDust {
+		s.pricesMutex.RUnlock()
+		return
+	}
+
+	pricesCopy := make(map[string]float64)
+	for source, price := range sourcePrices {
+		if source != "DeDust" {
+			pricesCopy[source] = price
+		}
+	}
+	s.pricesMutex.RUnlock()
+
+	// Find best short opportunity (Highest Price on Futures)
+	var bestShortPrice float64
+	var bestShortSource string
+	first := true
+
+	for source, price := range pricesCopy {
+		// Strict filter: Short leg MUST be a Futures/Perps exchange
+		// We filter out anything that is "spot" or doesn't have "futures"
+		if strings.Contains(strings.ToLower(source), "spot") {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(source), "futures") && !strings.Contains(strings.ToLower(source), "perp") {
+			continue
+		}
+
+		if first || price > bestShortPrice {
+			bestShortPrice = price
+			bestShortSource = source
+			first = false
+		}
+	}
+
+	if bestShortSource == "" {
+		return
+	}
+
+	// Basis Trade: Buy DeDust (Low), Short Futures (High)
+	if bestShortPrice > dedustPrice {
+		profitPct := ((bestShortPrice - dedustPrice) / dedustPrice) * 100
+		
+		// Threshold for Basis Trade (can be lower or 0 if we want to stream all spreads)
+		// User mentioned "In the table we will see... filter spread"
+		// Let's stream it if there is ANY profit (>0)
+		if profitPct > 0 {
+			opportunity := BasisTradeOpportunity{
+				Symbol:      symbol,
+				DeDustPrice: dedustPrice,
+				ShortSource: bestShortSource,
+				ShortPrice:  bestShortPrice,
+				ProfitPct:   profitPct,
+				Timestamp:   time.Now().UnixMilli(),
+			}
+			s.broadcastBasisTrade(opportunity)
+		}
+	}
+}
+
+func (s *FuturesScanner) broadcastBasisTrade(opportunity BasisTradeOpportunity) {
+	s.clientsMutex.RLock()
+	clients := make([]*websocket.Conn, 0, len(s.wsClients))
+	for client := range s.wsClients {
+		clients = append(clients, client)
+	}
+	s.clientsMutex.RUnlock()
+
+	message := map[string]interface{}{
+		"type":        "basis_trade",
+		"opportunity": opportunity,
+	}
+
+	s.wsWriteMutex.Lock()
+	defer s.wsWriteMutex.Unlock()
+
+	var toRemove []*websocket.Conn
+	for _, client := range clients {
+		err := client.WriteJSON(message)
+		if err != nil {
+			// log.Printf("WebSocket write error: %v", err)
+			client.Close()
+			toRemove = append(toRemove, client)
+		}
+	}
+
+	if len(toRemove) > 0 {
+		s.clientsMutex.Lock()
+		for _, client := range toRemove {
+			delete(s.wsClients, client)
+		}
+		s.clientsMutex.Unlock()
+	}
 }
 
 func (s *FuturesScanner) checkArbitrage(symbol string) {
@@ -138,11 +253,11 @@ func (s *FuturesScanner) checkArbitrage(symbol string) {
 	// Only alert if profit is significant (>0.05%) and we haven't alerted recently
 	if profitPct > 0.05 {
 		opportunityKey := fmt.Sprintf("%s_%s_%s", symbol, minSource, maxSource)
-		
+
 		s.opportunityMutex.RLock()
 		lastAlert, exists := s.lastOpportunity[opportunityKey]
 		s.opportunityMutex.RUnlock()
-		
+
 		now := time.Now()
 		// Only send alert if it's been more than 10 seconds since last alert for this pair
 		// This prevents spam while still allowing frequent updates for crypto markets
@@ -164,7 +279,7 @@ func (s *FuturesScanner) checkArbitrage(symbol string) {
 			s.broadcastOpportunity(opportunity)
 		}
 	}
-	
+
 	// Always broadcast current spreads for the spread matrix using the copy
 	s.broadcastSpreads(symbol, pricesCopy)
 }
@@ -215,7 +330,7 @@ func (s *FuturesScanner) broadcastSpreads(symbol string, sourcePrices map[string
 
 	// Calculate all pairwise spreads
 	spreads := make(map[string]map[string]float64)
-	
+
 	for buySource, buyPrice := range sourcePrices {
 		spreads[buySource] = make(map[string]float64)
 		for sellSource, sellPrice := range sourcePrices {
@@ -255,7 +370,6 @@ func (s *FuturesScanner) broadcastSpreads(symbol string, sourcePrices map[string
 		s.clientsMutex.Unlock()
 	}
 }
-
 
 func (s *FuturesScanner) broadcastPrices() {
 	ticker := time.NewTicker(200 * time.Millisecond)
@@ -311,7 +425,7 @@ func (s *FuturesScanner) broadcastPrices() {
 
 func (s *FuturesScanner) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	log.Printf("WebSocket connection attempt from %s", r.RemoteAddr)
-	
+
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		log.Printf("WebSocket upgrade error from %s: %v", r.RemoteAddr, err)
@@ -349,7 +463,7 @@ func main() {
 
 	scanner := NewFuturesScanner()
 
-	symbols := []string{"BTCUSDT", "ETHUSDT", "XRPUSDT", "SOLUSDT"}
+	symbols := []string{"TONUSDT"}
 
 	// Start processing goroutines
 	go scanner.processPrices()
@@ -364,11 +478,18 @@ func main() {
 	go exchanges.ConnectOKXFutures(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
 	go exchanges.ConnectGateFutures(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
 	go exchanges.ConnectParadexFutures(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
-	
+	go exchanges.ConnectVestFutures(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
+	go exchanges.ConnectExtendedFutures(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
+	go exchanges.ConnectVariationalFutures(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
+	go exchanges.ConnectLighterFutures(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
+
 	// Start spot exchange connections with orderbook feeds
 	go exchanges.ConnectBinanceSpot(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
 	go exchanges.ConnectBybitSpot(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
-	
+
+
+    // Start DeDust connection
+    go exchanges.ConnectDeDust(scanner.priceChan)
 	// Start Pyth price feed connection
 	go exchanges.ConnectPythPrices(symbols, scanner.priceChan, scanner.orderbookChan, scanner.tradeChan)
 

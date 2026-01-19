@@ -3,6 +3,7 @@ package exchanges
 import (
 	"encoding/json"
 	"log"
+	"strings"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -58,6 +59,18 @@ func processKrakenOrderbook(productID string, orderBook *KrakenOrderBook, orderb
 func ConnectKrakenFutures(symbols []string, priceChan chan<- PriceData, orderbookChan chan<- OrderbookData, tradeChan chan<- TradeData) {
 	wsURL := "wss://futures.kraken.com/ws/v1"
 
+	var productIDs []string
+	for _, sym := range symbols {
+		id := convertToKrakenSymbol(sym)
+		if id != "" {
+			productIDs = append(productIDs, id)
+		}
+	}
+	if len(productIDs) == 0 {
+		log.Printf("Kraken: no supported markets for requested symbols (%v); disabling", symbols)
+		return
+	}
+
 	// Maintain orderbooks for each symbol
 	orderbooks := make(map[string]*KrakenOrderBook)
 
@@ -71,11 +84,7 @@ func ConnectKrakenFutures(symbols []string, priceChan chan<- PriceData, orderboo
 
 		log.Printf("Connected to Kraken futures WebSocket")
 
-		// Subscribe to orderbook for each symbol
-		for _, symbol := range symbols {
-			// Convert BTCUSDT to PF_XBTUSD for Kraken
-			krakenSymbol := convertToKrakenSymbol(symbol)
-
+		for _, krakenSymbol := range productIDs {
 			subscribeMsg := map[string]interface{}{
 				"event":       "subscribe",
 				"feed":        "book",
@@ -88,7 +97,6 @@ func ConnectKrakenFutures(symbols []string, priceChan chan<- PriceData, orderboo
 				continue
 			}
 
-			// Initialize orderbook
 			orderbooks[krakenSymbol] = &KrakenOrderBook{
 				Bids: make([]KrakenOrderBookEntry, 0),
 				Asks: make([]KrakenOrderBookEntry, 0),
@@ -206,8 +214,7 @@ func upsertPriceLevel(orderbook *KrakenOrderBook, side string, price, qty float6
 }
 
 func convertToKrakenSymbol(symbol string) string {
-	// Convert BTCUSDT to PF_XBTUSD (Kraken's format for perpetual futures)
-	switch symbol {
+	switch strings.ToUpper(symbol) {
 	case "BTCUSDT":
 		return "PF_XBTUSD"
 	case "ETHUSDT":
@@ -217,7 +224,7 @@ func convertToKrakenSymbol(symbol string) string {
 	case "SOLUSDT":
 		return "PF_SOLUSD"
 	default:
-		return symbol
+		return ""
 	}
 }
 

@@ -16,6 +16,11 @@ const sourceConfig: Record<string, { label: string, color: string }> = {
     'okx_futures': { label: 'OKX Futures', color: '#1890ff' },
     'gate_futures': { label: 'Gate.io', color: '#6c5ce7' },
     'paradex_futures': { label: 'Paradex', color: '#ff6b6b' },
+    'vest_futures': { label: 'Vest', color: '#d2b48c' }, // Tan/Beige
+    'extended_futures': { label: 'Extended', color: '#ff9f43' }, // Orange-ish
+    'variational_perps': { label: 'Variational', color: '#ff6b81' }, // Red-ish
+    'lighter_futures': { label: 'Lighter', color: '#a29bfe' }, // Light Purple
+    'DeDust': { label: 'DeDust', color: '#00d2d3' }, // Cyan
     'binance_spot': { label: 'Binance Spot', color: '#F0B90B' },
     'bybit_spot': { label: 'Bybit Spot', color: '#F7931A' },
     'pyth': { label: 'Pyth Oracle', color: '#00ff88' },

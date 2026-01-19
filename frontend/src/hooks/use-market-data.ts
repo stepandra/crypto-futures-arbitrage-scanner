@@ -19,8 +19,35 @@ export function useMarketData() {
                 const data = JSON.parse(lastMessage.data);
 
                 if (data.type === 'prices') {
-                    // Bulk update usually on connect
-                    // Handle if needed, or rely on individual updates
+                    // Handle bulk price update
+                    const newPrices: Record<string, SourceState> = {};
+                    const priceMap = data.prices["TONUSDT"] || {}; // Default to TONUSDT for now as per main.go
+
+                    // Using a timestamp for all updates in this batch
+                    const now = Date.now();
+
+                    Object.entries(priceMap).forEach(([source, price]) => {
+                        const p = Number(price);
+
+                        // Calculate change relative to previous state if available
+                        const previous = prices[source];
+                        const previousPrice = previous ? previous.price : p;
+                        const change = p - previousPrice;
+                        const changePercent = previousPrice !== 0 ? (change / previousPrice) * 100 : 0;
+
+                        newPrices[source] = {
+                            price: p,
+                            previousPrice: previousPrice,
+                            change,
+                            changePercent,
+                            lastUpdate: now
+                        };
+                    });
+
+                    setPrices(prev => ({
+                        ...prev,
+                        ...newPrices
+                    }));
                 } else if (data.type === 'price_update') {
                     // Update specific source
                     setPrices(prev => {

@@ -13,10 +13,6 @@ export function Sidebar({ className, activeView = 'dashboard', onNavigate }: Sid
         <div className={cn("pb-12 border-r border-border bg-background flex flex-col h-full", className)}>
             <div className="space-y-4 py-4">
                 <div className="px-3 py-2">
-                    <h2 className="mb-2 px-4 text-lg font-semibold tracking-tight text-primary flex items-center gap-2">
-                        <Activity className="h-5 w-5" />
-                        ALGO TON
-                    </h2>
                     <div className="space-y-1">
                         <Button
                             variant={activeView === 'dashboard' ? "secondary" : "ghost"}

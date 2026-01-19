@@ -1,4 +1,4 @@
-import { LayoutDashboard, Activity, LineChart, Layers, ArrowLeftRight } from "lucide-react"
+import { LayoutDashboard, LineChart, Layers, ArrowLeftRight } from "lucide-react"
 import { cn } from "@/lib/utils"
 import { Button } from "@/components/ui/button"
 

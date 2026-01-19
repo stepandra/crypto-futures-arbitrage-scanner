@@ -496,6 +496,10 @@ func main() {
 	go scanner.broadcastPrices()
 
 	http.HandleFunc("/ws", scanner.handleWebSocket)
+	http.HandleFunc("/health", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"status":"ok","version":"v2-debug"}`))
+	})
 	http.Handle("/", http.FileServer(http.Dir("./static/")))
 
 	port := os.Getenv("PORT")
